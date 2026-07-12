@@ -108,6 +108,30 @@ Claude launch config `escape-the-heat` (port 5147). Deployment: see `DEPLOY.md`.
   Swim spots always keep their icon; swimmable waters also get blue polygons
 - Capped at 150 polygons per view, closest to the map centre first
 
+## Heat-aware recommendation
+- `HEAT_BANDS` tilts the recommendation score by live temperature:
+  under 27 °C parks win and AC buildings are damped (×0.7); 27–32 °C
+  boosts swimming/water/misting; above 32 °C AC buildings, water,
+  swimming and misting dominate while open parks are damped
+
+## Transit mode (AC public transport, Prague)
+- Third mode segment: live positions of **air-conditioned PID vehicles**
+  via Golemio `v2/vehiclepositions` (filter `trip.air_conditioned === true`)
+- Needs a free Golemio API key (api.golemio.cz/api-keys) — entered in the
+  app, stored ONLY in localStorage (`eth-golemio-key`), never in the repo
+- Refreshes every 20 s while the mode is active; viewport markers
+  (🚋/🚌/🚇) + nearest-6 list with route, headsign and distance
+- Field mapping is defensive (schema was not verifiable without a key):
+  if Golemio's real payload differs, adjust the mapping in `refreshTransit`
+
+## Area data notes
+- The greens Overpass statement must use `out geom` (body verbosity) —
+  `out geom tags` strips relation member lists and silently breaks every
+  multipolygon park (this bug hid Vítkov and the Letenské sady relation)
+- `dedupeNamedAreas()` drops duplicate representations of one named place
+  (e.g. Letenské sady = 2 ways + 1 relation) within 2 km, preferring the
+  relation with geometry
+
 ## Heat map mode
 - Segmented toggle in the sheet: Cool spots ↔ Heat map
 - Samples live Open-Meteo `temperature_2m` on an **absolute lattice**
