@@ -1,33 +1,25 @@
 # Deploying Escape the Heat
 
-The app is fully static (no build step, no API keys, no backend). Deploying =
-putting this `code/` folder on any static host with HTTPS. HTTPS matters:
-browsers only allow geolocation and service workers on secure origins, so the
-deployed app is the first place the real "find cooling near me" flow works.
+The app is fully static (no build step, no API keys, no backend) and lives at
+**https://github.com/hniv00/escape-the-heat**. Deploying = serving the repo
+on any static host with HTTPS. HTTPS matters: browsers only allow geolocation
+and service workers on secure origins, so the deployed app is the first place
+the real "find cooling near me" flow works.
 
-## Option A — Netlify Drop (fastest, no account tooling)
-1. Open https://app.netlify.com/drop
-2. Drag the whole `code/` folder onto the page
-3. Done — you get an `https://<something>.netlify.app` URL immediately
-4. (Optional) Log in to keep the site permanent and rename it:
-   Site settings → Change site name → e.g. `escape-the-heat`
+## Option A — GitHub Pages (recommended: repo already set up)
+One-time, in the browser:
+1. https://github.com/hniv00/escape-the-heat/settings/pages
+2. Source: **Deploy from a branch** → Branch: **main**, folder **/ (root)** → Save
+3. After ~1 minute the app is live at
+   **https://hniv00.github.io/escape-the-heat/**
+   (all app paths are relative, so the subpath works fine)
 
-## Option B — Vercel CLI
-```bash
-cd "personal/escape-the-heat/code"
-npx vercel --prod
-```
-Log in when prompted (first time only), accept the defaults.
+From then on every `git push` redeploys automatically.
 
-## Option C — GitHub Pages
-```bash
-cd "personal/escape-the-heat/code"
-git init && git add -A && git commit -m "Escape the Heat"
-gh repo create escape-the-heat --public --source=. --push
-gh api repos/{owner}/escape-the-heat/pages -X POST -f 'source[branch]=main' -f 'source[path]=/'
-```
-App appears at `https://<username>.github.io/escape-the-heat/`
-(all paths in the app are relative, so a subpath works fine).
+## Option B — Netlify from Git
+1. https://app.netlify.com → Add new site → Import an existing project
+2. Pick the `escape-the-heat` GitHub repo, no build command, publish dir `/`
+3. Auto-deploys on every push; nicer custom domains if wanted later
 
 ## After deploying — install on the phone
 - **iPhone (Safari):** open the URL → Share → *Add to Home Screen*
