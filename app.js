@@ -90,6 +90,12 @@ const I18N = {
     loadingMore: "Loading places…",
     modeSpots: "Cool spots",
     modeHeat: "Heat map",
+    modeTransit: "Transit",
+    save: "Save",
+    transitKeyInfo: "Live positions of air-conditioned PID vehicles need a free Golemio API key. Get one at api.golemio.cz/api-keys — it is stored only on this device.",
+    transitNote: "Air-conditioned PID vehicles near the map view, live via Golemio (Prague open data). Refreshes every 20 s.",
+    transitEmpty: "No air-conditioned vehicles nearby right now.",
+    transitBadKey: "Golemio rejected the API key — check it at api.golemio.cz.",
     heatNote: "Live air temperature from the Open-Meteo weather model (~1–2 km resolution). Street-level shade differences won't show — surface heat data is on the roadmap.",
     near: (base, place) => `${base} ${place.kind === "road" ? "on" : "near"} ${place.name}`,
     empty: "No cooling spots found nearby. Try zooming out or moving the map.",
@@ -194,6 +200,12 @@ const I18N = {
     loadingMore: "Načítám místa…",
     modeSpots: "Chladná místa",
     modeHeat: "Teplotní mapa",
+    modeTransit: "MHD",
+    save: "Uložit",
+    transitKeyInfo: "Živé polohy klimatizovaných vozidel PID vyžadují bezplatný Golemio API klíč. Získáte ho na api.golemio.cz/api-keys — ukládá se jen na tomto zařízení.",
+    transitNote: "Klimatizovaná vozidla PID poblíž výřezu mapy, živě přes Golemio (otevřená data Prahy). Obnovuje se každých 20 s.",
+    transitEmpty: "Poblíž teď nejsou žádná klimatizovaná vozidla.",
+    transitBadKey: "Golemio API klíč nefunguje — zkontrolujte ho na api.golemio.cz.",
     heatNote: "Aktuální teplota vzduchu z modelu Open-Meteo (rozlišení ~1–2 km). Rozdíly mezi jednotlivými ulicemi mapa nezachytí — povrchová data jsou v plánu.",
     near: (base, place) => {
       const gen = czGenitive(place.name);
@@ -398,8 +410,11 @@ const els = {
   locateBtn: $("locateBtn"), chips: $("chips"), notice: $("notice"),
   loadingPill: $("loadingPill"), card: $("card"), picks: $("picks"),
   cardQuip: $("cardQuip"),
-  modeSpots: $("modeSpots"), modeHeat: $("modeHeat"),
+  modeSpots: $("modeSpots"), modeHeat: $("modeHeat"), modeTransit: $("modeTransit"),
   heatPanel: $("heatPanel"), heatLo: $("heatLo"), heatHi: $("heatHi"),
+  transitPanel: $("transitPanel"), transitKeyBox: $("transitKeyBox"),
+  transitKeyInput: $("transitKeyInput"), transitKeySave: $("transitKeySave"),
+  transitList: $("transitList"),
   cardLoading: $("cardLoading"), cardBody: $("cardBody"), cardEmpty: $("cardEmpty"),
   cardEmoji: $("cardEmoji"), cardKicker: $("cardKicker"), cardTitle: $("cardTitle"),
   cardTemp: $("cardTemp"), cardCooler: $("cardCooler"), cardMeta: $("cardMeta"),
@@ -459,7 +474,9 @@ function buildOverpassQuery(loc, span) {
   }
   let q = `[out:json][timeout:25];`;
   if (points.length) q += `(${points.join("")});out center tags qt 4000;`;
-  if (greens.length) q += `(${greens.join("")});out geom tags qt 800;`;
+  // NB: default (body) verbosity, NOT "tags" — the tags mode strips
+  // relation member lists, which silently broke every multipolygon park
+  if (greens.length) q += `(${greens.join("")});out geom qt 800;`;
   return q;
 }
 
@@ -704,6 +721,32 @@ async function fetchSpots(loc, span) {
 function mergeSpots(fetched) {
   for (const s of fetched) state.spotCache.set(s.id, s);
   state.spots = [...state.spotCache.values()].sort((a, b) => a.distance - b.distance);
+  dedupeNamedAreas();
+}
+
+// OSM often maps one real place several times (Letenské sady = two ways
+// + one relation). Keep the best representation per (category, name) —
+// prefer the relation with geometry — and drop nearby duplicates.
+function dedupeNamedAreas() {
+  const groups = new Map();
+  for (const s of state.spots) {
+    if (!s.name || !GREEN_CATS.has(s.cat)) continue;
+    const k = `${s.cat}|${s.name}`;
+    if (!groups.has(k)) groups.set(k, []);
+    groups.get(k).push(s);
+  }
+  const drop = new Set();
+  for (const g of groups.values()) {
+    if (g.length < 2) continue;
+    const rank = (s) =>
+      (s.polys ? 2 : 0) + (s.id.startsWith("relation") ? 1 : 0);
+    const best = g.reduce((a, b) => (rank(b) > rank(a) ? b : a));
+    for (const s of g) {
+      // Same-named places in other towns stay; parts of one place don't
+      if (s !== best && haversine(s, best) < 2000) drop.add(s.id);
+    }
+  }
+  if (drop.size) state.spots = state.spots.filter((s) => !drop.has(s.id));
 }
 
 // Fetch spots around a point and merge them into the session cache.
@@ -805,8 +848,23 @@ function ensurePlace(spot) {
 
 /* ---------- Recommendation ---------- */
 
+// Heat-aware weighting: at 25 °C a park is lovely and AC is overkill;
+// at 35 °C water and air-conditioned interiors matter most. Bands keyed
+// by the live temperature; neutral (×1) when temperature is unknown.
+const HEAT_BANDS = [
+  { below: 27, w: { park: 1.1, forest: 1.1, swim: 0.95, building: 0.7, water: 1, fountain: 1, misting: 0.8 } },
+  { below: 32, w: { park: 1, forest: 1.05, swim: 1.2, building: 1.05, water: 1.15, fountain: 1, misting: 1.15 } },
+  { below: 99, w: { park: 0.85, forest: 0.95, swim: 1.35, building: 1.35, water: 1.3, fountain: 1.1, misting: 1.3 } },
+];
+
+function heatWeight(cat) {
+  if (state.temperature == null) return 1;
+  const band = HEAT_BANDS.find((b) => state.temperature < b.below) || HEAT_BANDS[HEAT_BANDS.length - 1];
+  return band.w[cat] ?? 1;
+}
+
 // "Where should I go right now?" — balance cooling benefit against
-// walking time. Cooling wins over marginal extra minutes.
+// walking time, tilted by how hot it actually is right now.
 function pickRecommendation(spots) {
   let best = null, bestScore = -Infinity;
   for (const s of spots) {
@@ -814,7 +872,7 @@ function pickRecommendation(spots) {
     if (!cat.recommend) continue;
     if (!buildingOpen(s)) continue; // don't send people to a locked door
     const minutes = estWalkMinutes(s.distance);
-    const score = cat.cooling / (minutes + 4);
+    const score = (cat.cooling * heatWeight(s.cat)) / (minutes + 4);
     if (score > bestScore) { bestScore = score; best = s; }
   }
   return best;
@@ -1194,27 +1252,111 @@ async function refreshHeat() {
   }
 }
 
+/* ---------- AC public transport (Golemio / PID, Prague) ---------- */
+
+const transitLayer = L.layerGroup();
+const TRANSIT_KEY_LS = "eth-golemio-key";
+const transitKey = () => localStorage.getItem(TRANSIT_KEY_LS) || "";
+let transitTimer = null;
+let lastVehicles = [];
+
+const esc = (s) => String(s).replace(/[&<>"']/g, (c) =>
+  ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+async function refreshTransit() {
+  if (state.mode !== "transit" || !transitKey()) return;
+  try {
+    const res = await fetch(
+      "https://api.golemio.cz/v2/vehiclepositions?limit=2000&includeNotTracking=false",
+      { headers: { "X-Access-Token": transitKey(), "Content-Type": "application/json" } }
+    );
+    if (res.status === 401 || res.status === 403) {
+      showNotice(t("transitBadKey"), true);
+      els.transitKeyBox.hidden = false;
+      return;
+    }
+    if (!res.ok) throw new Error(`Golemio ${res.status}`);
+    const data = await res.json();
+    lastVehicles = (data.features || [])
+      .filter((f) => f?.properties?.trip?.air_conditioned === true)
+      .map((f) => {
+        const [lon, lat] = f.geometry?.coordinates || [];
+        const gtfs = f.properties?.trip?.gtfs || {};
+        return {
+          lat, lon,
+          route: gtfs.route_short_name || "?",
+          headsign: gtfs.trip_headsign || "",
+          emoji: gtfs.route_type === 0 ? "🚋" : gtfs.route_type === 1 ? "🚇" : "🚌",
+        };
+      })
+      .filter((v) => v.lat != null);
+    renderTransit();
+  } catch {
+    showNotice(t("dataError"));
+  }
+}
+
+function renderTransit() {
+  if (state.mode !== "transit") return;
+  transitLayer.clearLayers();
+  const b = map.getBounds().pad(0.2);
+  const c = map.getCenter();
+  const center = { lat: c.lat, lon: c.lng };
+
+  for (const v of lastVehicles.filter((v) => b.contains([v.lat, v.lon])).slice(0, 150)) {
+    L.marker([v.lat, v.lon], {
+      icon: L.divIcon({
+        className: "",
+        html: `<div class="spot-marker">${v.emoji}</div>`,
+        iconSize: [30, 30], iconAnchor: [15, 15],
+      }),
+      interactive: false,
+    }).addTo(transitLayer);
+  }
+
+  const nearest = [...lastVehicles]
+    .sort((a, bb) => haversine(center, a) - haversine(center, bb))
+    .slice(0, 6);
+  els.transitList.innerHTML = nearest.length
+    ? nearest.map((v) =>
+        `<div class="transit-row"><span>${v.emoji}</span>` +
+        `<strong>${esc(v.route)}</strong>` +
+        `<span class="transit-dest">→ ${esc(v.headsign)}</span>` +
+        `<span class="transit-dist">${t("away", Math.round(haversine(center, v)))}</span></div>`
+      ).join("")
+    : `<p class="transit-empty">${t("transitEmpty")}</p>`;
+}
+
+/* ---------- Mode switching ---------- */
+
 function setMode(mode) {
   if (state.mode === mode) return;
   state.mode = mode;
-  const heat = mode === "heat";
-  els.modeSpots.setAttribute("aria-selected", String(!heat));
+  const heat = mode === "heat", transit = mode === "transit", spots = mode === "spots";
+  els.modeSpots.setAttribute("aria-selected", String(spots));
   els.modeHeat.setAttribute("aria-selected", String(heat));
-  els.chips.hidden = heat;
-  els.card.hidden = heat;
+  els.modeTransit.setAttribute("aria-selected", String(transit));
+  els.chips.hidden = !spots;
+  els.card.hidden = !spots;
   els.heatPanel.hidden = !heat;
+  els.transitPanel.hidden = !transit;
   document.body.classList.toggle("heat-on", heat);
-  renderPicks(); // hides itself in heat mode
-  if (heat) {
-    map.removeLayer(spotLayer);
-    map.removeLayer(routeLayer);
-    map.removeLayer(greenLayer);
-    refreshHeat();
+  renderPicks(); // hides itself outside spots mode
+
+  [greenLayer, spotLayer, routeLayer].forEach((l) => (spots ? l.addTo(map) : map.removeLayer(l)));
+
+  if (heat) refreshHeat();
+  else if (heatOverlay) { map.removeLayer(heatOverlay); heatOverlay = null; }
+
+  clearInterval(transitTimer);
+  if (transit) {
+    transitLayer.addTo(map);
+    els.transitKeyBox.hidden = !!transitKey();
+    els.transitList.innerHTML = "";
+    refreshTransit();
+    transitTimer = setInterval(refreshTransit, 20000);
   } else {
-    if (heatOverlay) { map.removeLayer(heatOverlay); heatOverlay = null; }
-    greenLayer.addTo(map);
-    spotLayer.addTo(map);
-    routeLayer.addTo(map);
+    map.removeLayer(transitLayer);
   }
 }
 
@@ -1409,6 +1551,17 @@ els.clearBtn.addEventListener("click", backToRecommendation);
 
 els.modeSpots.addEventListener("click", () => setMode("spots"));
 els.modeHeat.addEventListener("click", () => setMode("heat"));
+els.modeTransit.addEventListener("click", () => setMode("transit"));
+
+els.transitKeySave.addEventListener("click", () => {
+  const key = els.transitKeyInput.value.trim();
+  if (!key) return;
+  localStorage.setItem(TRANSIT_KEY_LS, key);
+  els.transitKeyInput.value = "";
+  els.transitKeyBox.hidden = true;
+  els.notice.hidden = true;
+  refreshTransit();
+});
 
 // Tapping empty map collapses an expanded cluster back to its single marker
 map.on("click", () => {
@@ -1426,6 +1579,10 @@ map.on("moveend", () => {
     // Cheap when the lattice is already cached — just a redraw
     clearTimeout(heatTimer);
     heatTimer = setTimeout(refreshHeat, 400);
+    return;
+  }
+  if (state.mode === "transit") {
+    renderTransit(); // re-filter cached vehicles to the new viewport
     return;
   }
   renderMarkers(); // re-apply the viewport filter immediately

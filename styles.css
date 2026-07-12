@@ -217,6 +217,61 @@ button.pill:active { transform: scale(0.96); }
   color: var(--ink-faint);
 }
 
+/* ---------- Transit panel ---------- */
+.transit-panel { padding: 4px 4px 0; }
+.transit-key-row {
+  display: flex;
+  gap: 8px;
+  margin: 10px 0 4px;
+}
+.transit-key-row input {
+  flex: 1;
+  height: 42px;
+  padding: 0 12px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--glass-border);
+  background: rgba(255, 255, 255, 0.8);
+  font-family: inherit;
+  font-size: 13.5px;
+  color: var(--ink);
+}
+.transit-key-row input:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
+}
+.btn-compact {
+  flex: 0 0 auto;
+  height: 42px;
+  padding: 0 18px;
+}
+.transit-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 4px;
+  font-size: 13.5px;
+  border-bottom: 1px solid rgba(22, 24, 29, 0.06);
+}
+.transit-row:last-of-type { border-bottom: none; }
+.transit-row strong { font-weight: 700; }
+.transit-dest {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ink-soft);
+}
+.transit-dist {
+  color: var(--ink-faint);
+  font-variant-numeric: tabular-nums;
+}
+.transit-empty {
+  margin: 10px 0;
+  font-size: 13px;
+  color: var(--ink-soft);
+}
+
 /* ---------- Layer chips ---------- */
 .chips {
   display: flex;

@@ -58,6 +58,7 @@
     <div class="mode-toggle" role="tablist" aria-label="Map mode">
       <button class="mode-btn" id="modeSpots" role="tab" aria-selected="true" data-i18n="modeSpots">Cool spots</button>
       <button class="mode-btn" id="modeHeat" role="tab" aria-selected="false" data-i18n="modeHeat">Heat map</button>
+      <button class="mode-btn" id="modeTransit" role="tab" aria-selected="false" data-i18n="modeTransit">Transit</button>
     </div>
 
     <!-- Layer chips -->
@@ -107,6 +108,19 @@
         <span id="heatHi">–</span>
       </div>
       <p class="heat-note" data-i18n="heatNote">Live air temperature from a weather model (~1–2 km resolution).</p>
+    </div>
+
+    <!-- AC public transport -->
+    <div class="transit-panel" id="transitPanel" hidden>
+      <div id="transitKeyBox" hidden>
+        <p class="heat-note" data-i18n="transitKeyInfo">Live positions of air-conditioned PID vehicles need a free Golemio API key. Get one at api.golemio.cz/api-keys — it is stored only on this device.</p>
+        <div class="transit-key-row">
+          <input id="transitKeyInput" type="password" autocomplete="off" placeholder="Golemio API key" />
+          <button class="btn btn-primary btn-compact" id="transitKeySave" data-i18n="save">Save</button>
+        </div>
+      </div>
+      <div id="transitList"></div>
+      <p class="heat-note" data-i18n="transitNote">Air-conditioned PID vehicles near the map view, live via Golemio (Prague open data). Refreshes every 20 s.</p>
     </div>
   </div>
 
