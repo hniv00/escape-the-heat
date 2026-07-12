@@ -114,7 +114,20 @@ Claude launch config `escape-the-heat` (port 5147). Deployment: see `DEPLOY.md`.
   boosts swimming/water/misting; above 32 °C AC buildings, water,
   swimming and misting dominate while open parks are damped
 
-## Transit mode (AC public transport, Prague)
+## Performance
+- **Local data cache**: everything fetched persists to localStorage for 24h
+  (`eth-data-v1`, ~0.5 MB); boots hydrate instantly and only uncovered
+  areas hit Overpass at all
+- **Last-location pre-render**: the previous GPS fix (`eth-last-loc`) lets
+  the app render map + markers + recommendation in ~50 ms while the real
+  GPS is still warming up; the fix then re-centres silently
+- **Endpoint racing**: Overpass queries go to two mirrors in parallel
+  (`Promise.any`, 20 s round timeout) instead of sequential 15 s retries
+
+## Transit mode (HIDDEN — AC public transport, Prague)
+- `TRANSIT_ENABLED = false`: requiring users to bring their own Golemio
+  API key is bad UX (Veronika's call); code stays dormant until there is
+  a keyless path (e.g. a tiny proxy holding the key)
 - Third mode segment: live positions of **air-conditioned PID vehicles**
   via Golemio `v2/vehiclepositions` (filter `trip.air_conditioned === true`)
 - Needs a free Golemio API key (api.golemio.cz/api-keys) — entered in the

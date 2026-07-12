@@ -664,24 +664,35 @@ function buildingOpen(spot) {
   return st;
 }
 
-async function fetchSpots(loc, span) {
-  const body = "data=" + encodeURIComponent(buildOverpassQuery(loc, span));
-  let data, lastErr;
-  for (let attempt = 0; attempt < OVERPASS_ENDPOINTS.length; attempt++) {
-    try {
-      // Give slow/throttled instances 15s, then move to the next one
-      const res = await fetch(OVERPASS_ENDPOINTS[overpassIdx], {
-        method: "POST", body, signal: AbortSignal.timeout(15000),
-      });
+// Race two Overpass instances and take whichever answers first — the
+// public servers throttle and queue unpredictably, and sequential
+// retries used to stack up to ~45 s of waiting.
+async function overpassFetch(body) {
+  const one = (url, signal) =>
+    fetch(url, { method: "POST", body, signal }).then((res) => {
       if (!res.ok) throw new Error(`Overpass ${res.status}`);
-      data = await res.json();
-      break;
-    } catch (e) {
-      lastErr = e;
-      overpassIdx = (overpassIdx + 1) % OVERPASS_ENDPOINTS.length;
+      return res.json();
+    });
+  for (let round = 0; round < 2; round++) {
+    const n = OVERPASS_ENDPOINTS.length;
+    const pair = [OVERPASS_ENDPOINTS[overpassIdx % n], OVERPASS_ENDPOINTS[(overpassIdx + 1) % n]];
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 20000);
+    try {
+      const data = await Promise.any(pair.map((u) => one(u, ctrl.signal)));
+      clearTimeout(timer);
+      ctrl.abort(); // cancel the slower one
+      return data;
+    } catch {
+      clearTimeout(timer);
+      overpassIdx = (overpassIdx + 2) % n; // next round: fresh pair
     }
   }
-  if (!data) throw lastErr;
+  throw new Error("Overpass unavailable");
+}
+
+async function fetchSpots(loc, span) {
+  const data = await overpassFetch("data=" + encodeURIComponent(buildOverpassQuery(loc, span)));
 
   const origin = state.user || loc;
   const spots = [];
@@ -722,6 +733,51 @@ function mergeSpots(fetched) {
   for (const s of fetched) state.spotCache.set(s.id, s);
   state.spots = [...state.spotCache.values()].sort((a, b) => a.distance - b.distance);
   dedupeNamedAreas();
+  schedulePersist();
+}
+
+/* ---------- Local data cache (fast boots) ----------
+   Parks and pítka don't move overnight: everything fetched is kept in
+   localStorage for 24h, so the next open renders instantly and only
+   uncovered areas hit Overpass at all. */
+
+const DATA_CACHE_KEY = "eth-data-v1";
+const DATA_TTL = 24 * 60 * 60 * 1000;
+let persistTimer = null;
+
+function schedulePersist() {
+  clearTimeout(persistTimer);
+  persistTimer = setTimeout(() => {
+    try {
+      localStorage.setItem(DATA_CACHE_KEY, JSON.stringify({
+        ts: Date.now(),
+        areas: state.loadedAreas,
+        // strip render-only fields (smoothed rings are recomputed)
+        spots: state.spots.map(({ smooth, placeLoading, walkMinutes, walkMeters, ...rest }) => rest),
+      }));
+    } catch {
+      localStorage.removeItem(DATA_CACHE_KEY); // quota — skip persisting
+    }
+  }, 2500);
+}
+
+// → true if usable cached data was loaded (distances re-based to `loc`)
+function hydrateData(loc) {
+  try {
+    const raw = localStorage.getItem(DATA_CACHE_KEY);
+    if (!raw) return false;
+    const d = JSON.parse(raw);
+    if (!d.ts || Date.now() - d.ts > DATA_TTL || !d.spots?.length) return false;
+    for (const s of d.spots) {
+      s.distance = Math.round(haversine(loc, s));
+      state.spotCache.set(s.id, s);
+    }
+    state.spots = [...state.spotCache.values()].sort((a, b) => a.distance - b.distance);
+    state.loadedAreas = d.areas || [];
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 // OSM often maps one real place several times (Letenské sady = two ways
@@ -1252,7 +1308,12 @@ async function refreshHeat() {
   }
 }
 
-/* ---------- AC public transport (Golemio / PID, Prague) ---------- */
+/* ---------- AC public transport (Golemio / PID, Prague) ----------
+   HIDDEN for now: requiring users to bring their own API key is bad
+   UX (Veronika's call). The code stays dormant; re-enable once there
+   is a keyless path (e.g. a small proxy that holds the key). */
+
+const TRANSIT_ENABLED = false;
 
 const transitLayer = L.layerGroup();
 const TRANSIT_KEY_LS = "eth-golemio-key";
@@ -1331,6 +1392,7 @@ function renderTransit() {
 
 function setMode(mode) {
   if (state.mode === mode) return;
+  if (mode === "transit" && !TRANSIT_ENABLED) return;
   state.mode = mode;
   const heat = mode === "heat", transit = mode === "transit", spots = mode === "spots";
   els.modeSpots.setAttribute("aria-selected", String(spots));
@@ -1412,6 +1474,7 @@ function renderCard(spot) {
     return;
   }
   els.cardBody.hidden = false;
+  if (!window.__firstCardMs) window.__firstCardMs = Math.round(performance.now());
 
   const cat = CATEGORIES[spot.cat];
   const isRec = state.recommendation && spot.id === state.recommendation.id;
@@ -1493,9 +1556,12 @@ function getLocation() {
 }
 
 async function loadArea(loc) {
-  els.cardLoading.hidden = false;
-  els.cardBody.hidden = true;
-  els.cardEmpty.hidden = true;
+  // Keep an already pre-rendered card on screen; only show the spinner
+  // when there is nothing to look at yet
+  if (els.cardBody.hidden) {
+    els.cardLoading.hidden = false;
+    els.cardEmpty.hidden = true;
+  }
   clearRoute();
   state.spotCache.clear();
   state.spots = [];
@@ -1504,23 +1570,60 @@ async function loadArea(loc) {
 
   fetchWeather(loc); // parallel, non-blocking
 
-  await loadSpotsAround(loc, 1200);
-
-  state.recommendation = pickRecommendation(state.spots);
-  state.selected = state.recommendation;
-  renderMarkers();
-  renderCard(state.recommendation);
+  // Cached data renders instantly; the network only fills real gaps
+  const hydrated = hydrateData(loc);
+  if (hydrated) {
+    state.recommendation = pickRecommendation(state.spots);
+    state.selected = state.recommendation;
+    renderMarkers();
+    renderPicks();
+    renderCard(state.recommendation);
+  }
+  const covered = state.loadedAreas.some(
+    (a) => haversine(a, loc) < a.span * 0.5 && 1200 <= a.span * 1.2 && !a.wide
+  );
+  if (!covered) {
+    await loadSpotsAround(loc, 1200);
+    state.recommendation = pickRecommendation(state.spots);
+    state.selected = state.recommendation;
+    renderMarkers();
+    renderCard(state.recommendation);
+  }
   state.booted = true;
   maybeLoadMore(); // catch up if the user panned away during boot
 }
 
+const LAST_LOC_KEY = "eth-last-loc";
+
+// Render around the last known location instantly (cached data included)
+// so the app is usable while the GPS is still warming up.
+function preRenderFromLastLocation() {
+  try {
+    const last = JSON.parse(localStorage.getItem(LAST_LOC_KEY) || "null");
+    if (!last || !inCzechia(last)) return;
+    state.user = last;
+    renderUserMarker();
+    map.setView([last.lat, last.lon], 15);
+    if (hydrateData(last)) {
+      state.recommendation = pickRecommendation(state.spots);
+      state.selected = state.recommendation;
+      renderMarkers();
+      renderPicks();
+      renderCard(state.recommendation);
+    }
+  } catch { /* corrupt entry — GPS path takes over */ }
+}
+
 async function locate() {
+  if (!state.booted) preRenderFromLastLocation();
+
   const loc = await getLocation();
   // Outside-Czechia locations get the Prague fallback too (data is CZ-only)
   const usable = loc && inCzechia(loc) ? loc : null;
   state.fallbackMsg = usable ? null : (loc ? "outsideCz" : "fallbackLocation");
   state.usingFallback = !usable;
   state.user = usable || PRAGUE;
+  if (usable) localStorage.setItem(LAST_LOC_KEY, JSON.stringify(usable));
   if (state.fallbackMsg) showNotice(t(state.fallbackMsg), true);
   else els.notice.hidden = true;
 
@@ -1591,6 +1694,8 @@ map.on("moveend", () => {
 });
 
 /* ---------- Go ---------- */
+
+els.modeTransit.hidden = !TRANSIT_ENABLED;
 
 renderStaticText();
 renderChips();
