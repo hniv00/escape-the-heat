@@ -3,7 +3,7 @@
    (Leaflet, fonts); APIs and map tiles go straight to the network.
    Bump CACHE to force-refresh everything after a deploy. */
 
-const CACHE = "eth-v3";
+const CACHE = "eth-v4";
 const SHELL = [
   "./",
   "index.html",

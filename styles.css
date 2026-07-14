@@ -73,7 +73,7 @@ html, body {
   right: 12px;
   z-index: 1000;
   display: flex;
-  justify-content: space-between;
+  justify-content: flex-end;
   align-items: center;
   gap: 8px;
   pointer-events: none;
@@ -93,13 +93,6 @@ html, body {
   letter-spacing: -0.01em;
   color: var(--ink);
   white-space: nowrap;
-}
-.brand-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: linear-gradient(135deg, #ff8a3d, var(--accent));
-  flex: none;
 }
 .temp { font-variant-numeric: tabular-nums; }
 button.pill {
